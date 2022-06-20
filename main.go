@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -26,21 +28,23 @@ import (
 	bsnet "github.com/ipfs/go-bitswap/network"
 )
 
-// TODO: Find a cleaner way to handle default endpoints without duplicating
-var validServices = []string{"web3.storage", "pinata", "estuary"}
 var servicesEndpoints = map[string]string{
 	"web3.storage": "https://api.web3.storage",
+	"nft.storage":  "https://nft.storage/api",
 	"pinata":       "https://api.pinata.cloud/psa",
 	"estuary":      "https://api.estuary.tech/pinning",
 }
 
 var serviceFlag = &cli.StringFlag{
-	Name: "service", Usage: "Pinning service to use, e.g. web3.storage, pinata, estuary", Required: true,
+	Name: "service", Usage: "Pinning service to use, e.g. web3.storage, nft.storage, pinata, estuary, or pinning service url, e.g. https://api.pinata.cloud/psa", Required: true,
 }
 
 var tokenFlag = &cli.StringFlag{
 	Name: "token", Usage: "Bearer token for the pinning service sent in the HTTP Authorization header", Required: true,
 }
+
+// var validServices = []string{"web3.storage", "nft.storage", "pinata", "estuary"}
+// var errInvalidSvc error = fmt.Errorf("services should be a pinning service endpoint URL or one of: %s", strings.Join(validServices, ", "))
 
 func main() {
 	var name string
@@ -59,13 +63,14 @@ func main() {
 					tokenFlag,
 				},
 				Action: func(c *cli.Context) error {
-					if !isServiceValid(c.String(serviceFlag.Name)) {
-						log.Fatal("services should be one of: ", strings.Join(validServices, ", "))
+					endpoint, err := getServiceEndpoint(c.String(serviceFlag.Name))
+					if err != nil {
+						return err
 					}
 
-					pinClient := pinclient.NewClient(servicesEndpoints[c.String(serviceFlag.Name)], c.String(tokenFlag.Name)) // instantiate client with token
+					pinClient := pinclient.NewClient(endpoint, c.String(tokenFlag.Name)) // instantiate client with token
 
-					_, err := listPins(c.Context, *pinClient)
+					_, err = listPins(c.Context, *pinClient)
 					if err != nil {
 						return err
 					}
@@ -84,8 +89,10 @@ func main() {
 					},
 				},
 				Action: func(c *cli.Context) error {
-					if !isServiceValid(c.String(serviceFlag.Name)) {
-						log.Fatal("services should be one of: ", strings.Join(validServices, ", "))
+					endpoint, err := getServiceEndpoint(c.String(serviceFlag.Name))
+
+					if err != nil {
+						return err
 					}
 
 					var carFilePath string
@@ -103,7 +110,7 @@ func main() {
 						return err
 					}
 
-					pinClient := pinclient.NewClient(servicesEndpoints[c.String(serviceFlag.Name)], c.String(tokenFlag.Name)) // instantiate client with token
+					pinClient := pinclient.NewClient(endpoint, c.String(tokenFlag.Name)) // instantiate client with token
 
 					// Create libp2p host
 					host, err := libp2p.New(
@@ -276,13 +283,18 @@ func addPins(ctx context.Context, client pinclient.Client, car *car.Reader, orig
 // 	return nil
 // }
 
-func isServiceValid(svc string) bool {
-	for _, validSvc := range validServices {
-		if validSvc == svc {
-			return true
-		}
+// `svc` can be either a valid key service from servicesEndpoints or a url
+func getServiceEndpoint(service string) (string, error) {
+	if endpoint, ok := servicesEndpoints[service]; ok {
+		return endpoint, nil
 	}
-	return false
+
+	endpoint, err := normalizeEndpoint(service)
+	if err != nil {
+		return "", err
+	}
+
+	return endpoint, nil
 }
 
 func listPins(ctx context.Context, c pinclient.Client) ([]string, error) {
@@ -301,31 +313,25 @@ func listPins(ctx context.Context, c pinclient.Client) ([]string, error) {
 	return pinnedCids, nil
 }
 
-// TODO: only needed if the cli can take user provided endpoints, which it should for interoprability...
-// endpoint, err := normalizeEndpoint(servicesEndpoints[svc])
-// if err != nil {
-// 	return err
-// }
-// func normalizeEndpoint(endpoint string) (string, error) {
-// 	uri, err := url.ParseRequestURI(endpoint)
-// 	if err != nil || !(uri.Scheme == "http" || uri.Scheme == "https") {
-// 		return "", fmt.Errorf("service endpoint must be a valid HTTP URL")
-// 	}
+func normalizeEndpoint(endpoint string) (string, error) {
+	uri, err := url.ParseRequestURI(endpoint)
+	if err != nil || !(uri.Scheme == "http" || uri.Scheme == "https") {
+		return "", fmt.Errorf("service endpoint must be a valid HTTP URL")
+	}
 
-// 	// cleanup trailing and duplicate slashes (https://github.com/ipfs/go-ipfs/issues/7826)
-// 	uri.Path = path.Clean(uri.Path)
-// 	uri.Path = strings.TrimSuffix(uri.Path, ".")
-// 	uri.Path = strings.TrimSuffix(uri.Path, "/")
+	// cleanup trailing and duplicate slashes (https://github.com/ipfs/go-ipfs/issues/7826)
+	uri.Path = path.Clean(uri.Path)
+	uri.Path = strings.TrimSuffix(uri.Path, ".")
+	uri.Path = strings.TrimSuffix(uri.Path, "/")
 
-// 	// remove any query params
-// 	if uri.RawQuery != "" {
-// 		return "", fmt.Errorf("service endpoint should be provided without any query parameters")
-// 	}
+	// remove any query params
+	if uri.RawQuery != "" {
+		return "", fmt.Errorf("service endpoint should be provided without any query parameters")
+	}
 
-// 	if strings.HasSuffix(uri.Path, "/pins") {
-// 		return "", fmt.Errorf("service endpoint should be provided without the /pins suffix")
-// 	}
+	if strings.HasSuffix(uri.Path, "/pins") {
+		return "", fmt.Errorf("service endpoint should be provided without the /pins suffix")
+	}
 
-// 	fmt.Printf("endpoint: %v \n", uri.String())
-// 	return uri.String(), nil
-// }
+	return uri.String(), nil
+}
