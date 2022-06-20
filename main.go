@@ -11,7 +11,6 @@ import (
 	"time"
 
 	pinclient "github.com/ipfs/go-pinning-service-http-client"
-
 	"github.com/ipld/go-car/v2"
 	"github.com/ipld/go-car/v2/blockstore"
 	"github.com/ipld/go-car/v2/index"
@@ -23,6 +22,8 @@ import (
 	"github.com/multiformats/go-multicodec"
 
 	"github.com/urfave/cli/v2" // imports as package "cli"
+
+	"github.com/briandowns/spinner"
 
 	"github.com/ipfs/go-bitswap"
 	bsnet "github.com/ipfs/go-bitswap/network"
@@ -48,8 +49,7 @@ var tokenFlag = &cli.StringFlag{
 
 func main() {
 	var name string
-
-	// TODO: move pinning to sub command
+	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	app := &cli.App{
 		Name:  "auspinner",
 		Usage: `stateless CLI tool to pin CAR files to IPFS pinning services`,
@@ -57,10 +57,13 @@ func main() {
 			{
 				Name:    "list",
 				Aliases: []string{"ls"},
-				Usage:   "list pins",
+				Usage:   "list all pins",
 				Flags: []cli.Flag{
 					serviceFlag,
 					tokenFlag,
+					&cli.StringFlag{
+						Name: "status", Usage: "filter based on pin status (if empty returns all), e.g. pinned, failed, pinning, queued", Required: false,
+					},
 				},
 				Action: func(c *cli.Context) error {
 					endpoint, err := getServiceEndpoint(c.String(serviceFlag.Name))
@@ -70,7 +73,18 @@ func main() {
 
 					pinClient := pinclient.NewClient(endpoint, c.String(tokenFlag.Name)) // instantiate client with token
 
-					_, err = listPins(c.Context, *pinClient)
+					s.Start()
+					pins, err := listPins(c.Context, *pinClient, pinclient.Status(c.String("status")))
+					s.Stop()
+					if err != nil {
+						return err
+					}
+
+					fmt.Println("CID | Request ID | Created | Status")
+					for _, pin := range pins {
+						fmt.Printf("%s %s (%s) %s\n", pin.GetPin().GetCid().String(), pin.GetRequestId(), pin.GetCreated().Format(time.RFC822), pin.GetStatus())
+					}
+
 					if err != nil {
 						return err
 					}
@@ -297,20 +311,20 @@ func getServiceEndpoint(service string) (string, error) {
 	return endpoint, nil
 }
 
-func listPins(ctx context.Context, c pinclient.Client) ([]string, error) {
-	psCh, errCh := c.Ls(ctx, pinclient.PinOpts.FilterStatus(pinclient.StatusPinned, pinclient.StatusPinning, pinclient.StatusFailed, pinclient.StatusQueued))
-	pinnedCids := []string{}
+func listPins(ctx context.Context, c pinclient.Client, status pinclient.Status) ([]pinclient.PinStatusGetter, error) {
+	var opts pinclient.LsOption
 
-	fmt.Println("CID | Request ID | Created | Status")
-	for ps := range psCh {
-		pinnedCids = append(pinnedCids, ps.GetRequestId())
-		fmt.Printf("%s %s (%s) %s\n", ps.GetPin().GetCid().String(), ps.GetRequestId(), ps.GetCreated().Format(time.RFC822), ps.GetStatus())
+	if status == "" {
+		// If status is empty, list all statuses
+		opts = pinclient.PinOpts.FilterStatus(pinclient.StatusPinned, pinclient.StatusPinning, pinclient.StatusFailed, pinclient.StatusQueued)
+	} else {
+		s := pinclient.Status(status)
+		if s.String() == string(pinclient.StatusUnknown) {
+			return nil, fmt.Errorf("status %s is not valid", status)
+		}
+		opts = pinclient.PinOpts.FilterStatus(status)
 	}
-
-	if err := <-errCh; err != nil {
-		return nil, fmt.Errorf("error while listing remote pins: %v", err)
-	}
-	return pinnedCids, nil
+	return c.LsSync(ctx, opts)
 }
 
 func normalizeEndpoint(endpoint string) (string, error) {

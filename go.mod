@@ -3,6 +3,7 @@ module github.com/2color/auspinner
 go 1.18
 
 require (
+	github.com/briandowns/spinner v1.18.1
 	github.com/ipfs/go-bitswap v0.5.1
 	github.com/ipfs/go-pinning-service-http-client v0.1.1
 	github.com/ipld/go-car/v2 v2.1.1
@@ -36,6 +37,7 @@ require (
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
 	github.com/docker/go-units v0.4.0 // indirect
 	github.com/elastic/gosigar v0.12.0 // indirect
+	github.com/fatih/color v1.7.0 // indirect
 	github.com/flynn/noise v1.0.0 // indirect
 	github.com/francoispqt/gojay v1.2.13 // indirect
 	github.com/fsnotify/fsnotify v1.4.9 // indirect
@@ -95,6 +97,7 @@ require (
 	github.com/marten-seemann/qtls-go1-17 v0.1.1 // indirect
 	github.com/marten-seemann/qtls-go1-18 v0.1.1 // indirect
 	github.com/marten-seemann/tcp v0.0.0-20210406111302-dfbc87cc63fd // indirect
+	github.com/mattn/go-colorable v0.1.2 // indirect
 	github.com/mattn/go-isatty v0.0.14 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.1 // indirect
 	github.com/miekg/dns v1.1.43 // indirect
