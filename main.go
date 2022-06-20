@@ -99,6 +99,7 @@ func main() {
 					serviceFlag,
 					tokenFlag,
 					&cli.StringFlag{
+						// TODO: use the name
 						Name: "name", Usage: "Optional name for pinned data; can be used for lookups later", Required: false, Destination: &name,
 					},
 				},
@@ -137,7 +138,7 @@ func main() {
 
 					// Create libp2p host
 					var mas []multiaddr.Multiaddr
-					var pinStatuses []pinclient.PinStatusGetter
+					var pinRequests []pinclient.PinStatusGetter
 					// wait 10 seconds so port mapping has time to get set up
 					time.AfterFunc(time.Second*10, func() {
 						addr := peer.AddrInfo{
@@ -156,9 +157,9 @@ func main() {
 							fmt.Println(a)
 						}
 
-						pinStatuses, err = addPins(c.Context, *pinClient, r, mas)
+						pinRequests, err = addPins(c.Context, *pinClient, r, mas)
 
-						for _, d := range pinStatuses[0].GetDelegates() {
+						for _, d := range pinRequests[0].GetDelegates() {
 							p, err := peer.AddrInfoFromP2pAddr(d)
 							if err != nil {
 								panic(err)
@@ -172,6 +173,39 @@ func main() {
 						if err != nil {
 							fmt.Println(err)
 							panic(err)
+						}
+						// Track status of pin requests
+						for range time.Tick(5 * time.Second) {
+							var pinning, queued, pinned, failed int
+
+							for _, pinRequest := range pinRequests {
+								updatedStatus, err := pinClient.GetStatusByID(c.Context, pinRequest.GetRequestId())
+								if err != nil {
+									fmt.Println("failed getting pin request status")
+									continue
+								}
+
+								if pinRequest.GetStatus() != updatedStatus.GetStatus() {
+									fmt.Printf("Pin requestId: %s updated status: %s (%s)\n", updatedStatus.GetRequestId(), updatedStatus.GetStatus(), time.Now().Format(time.RFC822))
+								}
+
+								switch updatedStatus.GetStatus() {
+								case "pinned":
+									pinned++
+								case "failed":
+									failed++
+								case "pinning":
+									pinning++
+								case "queued":
+									queued++
+								}
+
+							}
+
+							if pinned+failed >= len(pinRequests) {
+								fmt.Printf("All pin requests have either pinned (%d) or failed (%d)\n", pinned, failed)
+								break
+							}
 						}
 					})
 
@@ -197,10 +231,9 @@ func main() {
 					)
 					_ = bswap
 
-					// TODO:
-					_ = pinStatuses
-					// watchPinStatus()
+					// TODO: Reconnect to delegates
 
+					// Block indefinitely (since context is background)
 					<-c.Done()
 					return nil
 				},
@@ -246,27 +279,24 @@ func getCarBlockstore(r *car.Reader) (*blockstore.ReadOnly, error) {
 func addPins(ctx context.Context, client pinclient.Client, car *car.Reader, origins []multiaddr.Multiaddr) ([]pinclient.PinStatusGetter, error) {
 	// TODO: Figure out how a CAR file can have multiple root CIDs
 	roots, err := car.Roots()
-	fmt.Printf("pinning CID: %v\n", roots)
+	fmt.Printf("pinning root CIDs: %v\n", roots)
 	if err != nil {
 		return nil, err
 	}
 
-	pinStatuses := []pinclient.PinStatusGetter{}
+	pinRequests := []pinclient.PinStatusGetter{}
 	opts := []pinclient.AddOption{}
 	for _, cid := range roots {
-		fmt.Printf("pinning root CID: %v", roots)
-		// TODO: How do I only pass publicly reachable addresses?
 		opts = append(opts, pinclient.PinOpts.WithOrigins(origins...)) // Pass the address so that the pinning service can fetch the
 		pinStatus, err := client.Add(ctx, cid, opts...)
 		if err != nil {
 			return nil, err
 		}
-		pinStatuses = append(pinStatuses, pinStatus)
-		fmt.Printf("status %v", pinStatus)
+		fmt.Printf("Created pin request: %s %s | status: %s\n", pinStatus.GetRequestId(), time.Now().Format(time.RFC822), pinStatus.GetStatus())
+		pinRequests = append(pinRequests, pinStatus)
 	}
-	fmt.Printf("pinned %d CIDs", len(pinStatuses))
 
-	return pinStatuses, nil
+	return pinRequests, nil
 }
 
 // func connectToDelegates(ctx context.Context, h host.Host, delegates []string) error {
