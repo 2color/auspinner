@@ -58,9 +58,6 @@ var (
 	}
 )
 
-// var validServices = []string{"web3.storage", "nft.storage", "pinata", "estuary"}
-// var errInvalidSvc error = fmt.Errorf("services should be a pinning service endpoint URL or one of: %s", strings.Join(validServices, ", "))
-
 func main() {
 	// Spinner to visualise ongoing operation
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
@@ -474,6 +471,7 @@ func normalizeEndpoint(endpoint string) (string, error) {
 	return uri.String(), nil
 }
 
+// Get public multi addresses of a host
 func getPublicAddr(host host.Host) ([]multiaddr.Multiaddr, error) {
 	addr := peer.AddrInfo{
 		ID:    host.ID(),
