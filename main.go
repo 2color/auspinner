@@ -10,15 +10,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ipfs/go-cid"
 	pinclient "github.com/ipfs/go-pinning-service-http-client"
 	"github.com/ipld/go-car/v2"
 	"github.com/ipld/go-car/v2/blockstore"
 	"github.com/ipld/go-car/v2/index"
 
 	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p-core/event"
+	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/peer"
 	routinghelpers "github.com/libp2p/go-libp2p-routing-helpers"
 	"github.com/multiformats/go-multiaddr"
+	manet "github.com/multiformats/go-multiaddr/net"
 	"github.com/multiformats/go-multicodec"
 
 	"github.com/urfave/cli/v2" // imports as package "cli"
@@ -173,89 +177,30 @@ func main() {
 						return err
 					}
 
-					pinClient := pinclient.NewClient(endpoint, c.String(tokenFlag.Name)) // instantiate client with token
-
-					// Create libp2p host
-					host, err := libp2p.New(
-						libp2p.NATPortMap(),
-						libp2p.EnableHolePunching(),
-					)
+					roots, err := r.Roots()
 					if err != nil {
 						return err
 					}
 
+					if len(roots) > 1 {
+						return fmt.Errorf(".car files with only one root CID are supported")
+					}
+
+					pinClient := pinclient.NewClient(endpoint, c.String(tokenFlag.Name)) // instantiate client with token
+
+					config := []libp2p.Option{}
+
+					if c.Bool(passOrigins.Name) {
+						// To pass the origins we typically need to port map assuming we're behind NAT
+						// enable port mapping so that our host can be connected by passing our address as origins
+						config = append(config, libp2p.NATPortMap(), libp2p.EnableHolePunching())
+					}
+
 					// Create libp2p host
-					var mas []multiaddr.Multiaddr
-					var pinRequests []pinclient.PinStatusGetter
-					// wait 10 seconds so port mapping has time to get set up
-					time.AfterFunc(time.Second*10, func() {
-						addr := peer.AddrInfo{
-							ID:    host.ID(),
-							Addrs: host.Addrs(),
-						}
-						mas, err = peer.AddrInfoToP2pAddrs(&addr)
-
-						if err != nil {
-							fmt.Println(err)
-							panic(err)
-						}
-
-						fmt.Println("multiaddrs:")
-						for _, a := range mas {
-							fmt.Println(a)
-						}
-
-						pinRequests, err = addPins(c.Context, *pinClient, r, mas)
-
-						for _, d := range pinRequests[0].GetDelegates() {
-							p, err := peer.AddrInfoFromP2pAddr(d)
-							if err != nil {
-								panic(err)
-							}
-
-							if err := host.Connect(c.Context, *p); err != nil {
-								log.Fatalf("error connecting to remote pin delegate %v : %v", d, err)
-							}
-						}
-
-						if err != nil {
-							fmt.Println(err)
-							panic(err)
-						}
-						// Track status of pin requests
-						for range time.Tick(5 * time.Second) {
-							var pinning, queued, pinned, failed int
-
-							for _, pinRequest := range pinRequests {
-								updatedStatus, err := pinClient.GetStatusByID(c.Context, pinRequest.GetRequestId())
-								if err != nil {
-									fmt.Println("failed getting pin request status")
-									continue
-								}
-
-								if pinRequest.GetStatus() != updatedStatus.GetStatus() {
-									fmt.Printf("Pin requestId: %s updated status: %s (%s)\n", updatedStatus.GetRequestId(), updatedStatus.GetStatus(), time.Now().Format(time.RFC822))
-								}
-
-								switch updatedStatus.GetStatus() {
-								case "pinned":
-									pinned++
-								case "failed":
-									failed++
-								case "pinning":
-									pinning++
-								case "queued":
-									queued++
-								}
-
-							}
-
-							if pinned+failed >= len(pinRequests) {
-								fmt.Printf("All pin requests have either pinned (%d) or failed (%d)\n", pinned, failed)
-								break
-							}
-						}
-					})
+					host, err := libp2p.New(config...)
+					if err != nil {
+						return err
+					}
 
 					bsopts := []bitswap.Option{
 						bitswap.EngineBlockstoreWorkerCount(600),
@@ -268,21 +213,112 @@ func main() {
 						return err
 					}
 
-					// Create a Bitswap server. To connect use the
+					// Create a Bitswap server.
 					bswap := bitswap.New(c.Context, // Make a new Bitswap server (actually it's both a client and a server, but for now you only care about the server aspect)
 						bsnet.NewFromIpfsHost( // There's some abstraction layer here and bad naming, but basically it's asking for pieces it need
 							host,                   // libp2p host used for communicating with others
-							&routinghelpers.Null{}, // a routing system for finding content for the client (also it does this wacky thing where it advertises new blocks it learns about ... but don't worry about this)
+							&routinghelpers.Null{}, // a routing system for finding content for the client (also it does this wacky thing where it advertises new blocks it learns about ...)
 						),
-						robs,      // this is the blockstore that I'm willing to serve from
+						robs,      // this is the blockstore from the car file we're serving over bitswap
 						bsopts..., // some configuration options and tuning
 					)
 					_ = bswap
 
-					// TODO: Reconnect to delegates
+					var pinRequest pinclient.PinStatusGetter
 
-					// Block indefinitely (since context is background)
-					<-c.Done()
+					if c.Bool(passOrigins.Name) {
+
+						subs, err := host.EventBus().Subscribe(new(event.EvtLocalAddressesUpdated))
+						if err != nil {
+							return err
+						}
+						fmt.Println("Waiting to get public multiaddress from UPnP port mapping")
+					addrLoop:
+						for {
+							select {
+
+							// Wait for the public IP after mapping the port
+							case <-subs.Out():
+
+								origins, err := getPublicAddr(host)
+								if err != nil {
+									return err
+								}
+
+								if len(origins) > 0 {
+									pinRequest, err = addPin(c.Context, *pinClient, roots[0], c.String(nameFlag.Name), origins)
+									if err != nil {
+										return err
+									}
+									break addrLoop
+								}
+
+							case <-time.After(1 * time.Minute):
+								return fmt.Errorf("couldn't make auspinner publicly reachable for passing in origins. Try enabling UPnP in your router")
+							}
+						}
+
+					} else {
+						origins, err := getPublicAddr(host)
+						if err != nil {
+							return err
+						}
+						pinRequest, err = addPin(c.Context, *pinClient, roots[0], c.String(nameFlag.Name), origins)
+
+						if err != nil {
+							return err
+						}
+
+						// If there are no delegates, we need to wait for the port mapping to happen and update the pin request with the origins
+						// Otherwise there's no way for the pinning service to fetch the CID if we're the only provider on the network
+						if len(pinRequest.GetDelegates()) == 0 {
+							return fmt.Errorf("no delegates were returned. Try again with the --pass-origins flag")
+						}
+					}
+
+					// Connect to the delegates returned from the pinning service
+					for _, d := range pinRequest.GetDelegates() {
+						p, err := peer.AddrInfoFromP2pAddr(d)
+						if err != nil {
+							return err
+						}
+
+						fmt.Printf("Connecting to delegate: (%s)\n", p.String())
+
+						if err := host.Connect(c.Context, *p); err != nil {
+							log.Fatalf("error connecting to remote pin delegate %v : %v", d, err)
+						}
+					}
+
+					// Track status of pin requests
+					for range time.Tick(5 * time.Second) {
+						s.Start()
+						current, err := pinClient.GetStatusByID(c.Context, pinRequest.GetRequestId())
+						if err != nil {
+							fmt.Println("failed getting pin request status")
+							continue
+						}
+
+						if pinRequest.GetStatus() != current.GetStatus() {
+							s.Stop()
+
+							fmt.Printf("Pin requestId: %s status change: (%s) -> (%s) | (%s)\n", current.GetRequestId(), pinRequest.GetStatus(), current.GetStatus(), time.Now().Format(time.RFC822))
+							pinRequest = current
+						}
+
+						if current.GetStatus() == "pinned" {
+							s.Stop()
+							fmt.Printf("Pin requestId: %s successfully pinned CID: %s! 🎉\n", current.GetRequestId(), current.GetPin().GetCid())
+							break
+						}
+
+						if current.GetStatus() == "failed" {
+							fmt.Printf("Pin requestId: %s failed to pin CID: 😭\n", current.GetRequestId())
+							s.Stop()
+							break
+						}
+
+					}
 					return nil
 				},
 			},
@@ -324,27 +360,37 @@ func getCarBlockstore(r *car.Reader) (*blockstore.ReadOnly, error) {
 	return blockstore.NewReadOnly(backingReader, idx)
 }
 
-func addPins(ctx context.Context, client pinclient.Client, car *car.Reader, origins []multiaddr.Multiaddr) ([]pinclient.PinStatusGetter, error) {
-	// TODO: Figure out how a CAR file can have multiple root CIDs
-	roots, err := car.Roots()
-	fmt.Printf("pinning root CIDs: %v\n", roots)
+func addPin(ctx context.Context, client pinclient.Client, cid cid.Cid, name string, origins []multiaddr.Multiaddr) (pinclient.PinStatusGetter, error) {
+	opts := []pinclient.AddOption{
+		pinclient.PinOpts.WithName(name), // Pass the name
+	}
+
+	if origins != nil {
+		opts = append(opts, pinclient.PinOpts.WithOrigins(origins...)) // Pass our address so that the pinning service can fetch the
+	}
+
+	pinRequest, err := client.Add(ctx, cid, opts...)
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf("Created pin request: %s for root CID %s | status: %s | origins: %v | %s\n", pinRequest.GetRequestId(), cid, pinRequest.GetStatus(), origins, time.Now().Format(time.RFC822))
 
-	pinRequests := []pinclient.PinStatusGetter{}
-	opts := []pinclient.AddOption{}
-	for _, cid := range roots {
-		opts = append(opts, pinclient.PinOpts.WithOrigins(origins...)) // Pass the address so that the pinning service can fetch the
-		pinStatus, err := client.Add(ctx, cid, opts...)
-		if err != nil {
-			return nil, err
-		}
-		fmt.Printf("Created pin request: %s %s | status: %s\n", pinStatus.GetRequestId(), time.Now().Format(time.RFC822), pinStatus.GetStatus())
-		pinRequests = append(pinRequests, pinStatus)
+	return pinRequest, nil
+}
+
+func updatePinRequestOrigins(ctx context.Context, client pinclient.Client, pin pinclient.PinStatusGetter, origins []multiaddr.Multiaddr) (pinclient.PinStatusGetter, error) {
+	opts := []pinclient.AddOption{
+		pinclient.PinOpts.WithName(pin.GetPin().GetName()), // Pass the name
+		pinclient.PinOpts.WithOrigins(origins...),          // Pass our address so that the pinning service can fetch the
 	}
+	updatedPinRequest, err := client.Replace(ctx, pin.GetRequestId(), pin.GetPin().GetCid(), opts...)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("Updated pin request: %s %s | status: %s\n", updatedPinRequest.GetRequestId(), time.Now().Format(time.RFC822), updatedPinRequest.GetStatus())
+	fmt.Printf("Original pin request: %s | New pin request: %s\n", pin.GetRequestId(), updatedPinRequest.GetRequestId())
 
-	return pinRequests, nil
+	return updatedPinRequest, nil
 }
 
 // func connectToDelegates(ctx context.Context, h host.Host, delegates []string) error {
@@ -426,4 +472,27 @@ func normalizeEndpoint(endpoint string) (string, error) {
 	}
 
 	return uri.String(), nil
+}
+
+func getPublicAddr(host host.Host) ([]multiaddr.Multiaddr, error) {
+	addr := peer.AddrInfo{
+		ID:    host.ID(),
+		Addrs: host.Addrs(),
+	}
+
+	// All multi addresses including private
+	maddr, err := peer.AddrInfoToP2pAddrs(&addr)
+	if err != nil {
+		return nil, err
+	}
+
+	var origins []multiaddr.Multiaddr
+	for _, m := range maddr {
+		// Check if I have public addresse
+		if manet.IsPublicAddr(m) {
+			origins = append(origins, m)
+		}
+	}
+
+	return origins, nil
 }
