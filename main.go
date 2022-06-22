@@ -29,27 +29,39 @@ import (
 	bsnet "github.com/ipfs/go-bitswap/network"
 )
 
-var servicesEndpoints = map[string]string{
-	"web3.storage": "https://api.web3.storage",
-	"nft.storage":  "https://nft.storage/api",
-	"pinata":       "https://api.pinata.cloud/psa",
-	"estuary":      "https://api.estuary.tech/pinning",
-}
+var (
+	servicesEndpoints = map[string]string{
+		"web3.storage": "https://api.web3.storage",
+		"nft.storage":  "https://nft.storage/api",
+		"pinata":       "https://api.pinata.cloud/psa",
+		"estuary":      "https://api.estuary.tech/pinning",
+	}
 
-var serviceFlag = &cli.StringFlag{
-	Name: "service", Usage: "Pinning service to use, e.g. web3.storage, nft.storage, pinata, estuary, or pinning service url, e.g. https://api.pinata.cloud/psa", Required: true,
-}
+	serviceFlag = &cli.StringFlag{
+		Name: "service", Usage: "Pinning service to use, e.g. web3.storage, nft.storage, pinata, estuary, or pinning service url, e.g. https://api.pinata.cloud/psa", Required: true,
+	}
 
-var tokenFlag = &cli.StringFlag{
-	Name: "token", Usage: "Bearer token for the pinning service sent in the HTTP Authorization header", Required: true,
-}
+	tokenFlag = &cli.StringFlag{
+		Name: "token", Usage: "Bearer token for the pinning service sent in the HTTP Authorization header", Required: true, EnvVars: []string{"PIN_SVC_TOKEN"},
+	}
+
+	passOrigins = &cli.BoolFlag{
+		Name: "pass-origins", Usage: "Enable NAT port mapping with UPnP and NAT hole punching and passes the public address in the pin request's origins. Use when behind NAT with pinning services that don't return delegates",
+	}
+
+	nameFlag = &cli.StringFlag{
+		Name: "name", Usage: "Optional name for pinned data; can be used for lookups later", Required: false,
+	}
+)
 
 // var validServices = []string{"web3.storage", "nft.storage", "pinata", "estuary"}
 // var errInvalidSvc error = fmt.Errorf("services should be a pinning service endpoint URL or one of: %s", strings.Join(validServices, ", "))
 
 func main() {
-	var name string
+	// Spinner to visualise ongoing operation
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
+	s.Color("magenta")
+
 	app := &cli.App{
 		Name:  "auspinner",
 		Usage: `stateless CLI tool to pin CAR files to IPFS pinning services`,
@@ -57,7 +69,7 @@ func main() {
 			{
 				Name:    "list",
 				Aliases: []string{"ls"},
-				Usage:   "list all pins",
+				Usage:   "list pins",
 				Flags: []cli.Flag{
 					serviceFlag,
 					tokenFlag,
@@ -80,7 +92,7 @@ func main() {
 						return err
 					}
 
-					fmt.Println("CID | Request ID | Created | Status")
+					fmt.Println("CID | Pin Request ID | Created | Status")
 					for _, pin := range pins {
 						fmt.Printf("%s %s (%s) %s\n", pin.GetPin().GetCid().String(), pin.GetRequestId(), pin.GetCreated().Format(time.RFC822), pin.GetStatus())
 					}
@@ -93,15 +105,51 @@ func main() {
 				},
 			},
 			{
-				Name:  "pin",
-				Usage: `pin a car file to a pinning service by pinning the root CID and serving the CIDs over Bitswap to the delegate returned from the pinning service`,
+				Name:    "remove",
+				Aliases: []string{"rm"},
+				Usage: `remove a pin request
+				auspinner remove --service [SERVICE] --token [TOKEN] [PIN_REQUEST_ID]
+				`,
 				Flags: []cli.Flag{
 					serviceFlag,
 					tokenFlag,
-					&cli.StringFlag{
-						// TODO: use the name
-						Name: "name", Usage: "Optional name for pinned data; can be used for lookups later", Required: false, Destination: &name,
-					},
+				},
+				Action: func(c *cli.Context) error {
+					endpoint, err := getServiceEndpoint(c.String(serviceFlag.Name))
+					if err != nil {
+						return err
+					}
+
+					var pinID string
+					if pinID = c.Args().First(); pinID == "" {
+						return fmt.Errorf("pin request ID is required")
+					}
+
+					pinClient := pinclient.NewClient(endpoint, c.String(tokenFlag.Name)) // instantiate client with token
+
+					s.Start()
+					err = pinClient.DeleteByID(c.Context, pinID)
+					s.Stop()
+					if err != nil {
+						return err
+					}
+
+					fmt.Printf("Deleted Pin Request ID: %s\n", pinID)
+
+					return nil
+				},
+			},
+			{
+				Name: "pin",
+				Usage: `pin a car file to a pinning service by pinning the root CID and serving the CIDs over Bitswap to the delegate returned from the pinning service
+
+				auspinner pin --service web3.storage --token [TOKEN] file.car
+				`,
+				Flags: []cli.Flag{
+					serviceFlag,
+					tokenFlag,
+					nameFlag,
+					passOrigins,
 				},
 				Action: func(c *cli.Context) error {
 					endpoint, err := getServiceEndpoint(c.String(serviceFlag.Name))
@@ -112,7 +160,7 @@ func main() {
 
 					var carFilePath string
 					if carFilePath = c.Args().First(); carFilePath == "" {
-						log.Fatal(".car file is required")
+						return fmt.Errorf(".car file is required")
 					}
 					f, err := os.Open(carFilePath)
 					if err != nil {
