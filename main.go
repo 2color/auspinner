@@ -93,9 +93,10 @@ func main() {
 						return err
 					}
 
-					fmt.Println("CID | Pin Request ID | Created | Status")
+					fmt.Println("CID | Pin Request ID | Created | Status | Name")
 					for _, pin := range pins {
-						fmt.Printf("%s %s (%s) %s\n", pin.GetPin().GetCid().String(), pin.GetRequestId(), pin.GetCreated().Format(time.RFC822), pin.GetStatus())
+						p := pin.GetPin()
+						fmt.Printf("%s %s %s (%s) %s\n", p.GetCid().String(), pin.GetRequestId(), pin.GetCreated().Format(time.RFC822), pin.GetStatus(), p.GetName())
 					}
 
 					if err != nil {
@@ -278,16 +279,17 @@ func main() {
 							return err
 						}
 
-						fmt.Printf("Connecting to delegate: (%s)\n", p.String())
+						fmt.Printf("Connecting local Bitswap host to delegate: (%s)\n", p.String())
 
 						if err := host.Connect(c.Context, *p); err != nil {
 							log.Fatalf("error connecting to remote pin delegate %v : %v", d, err)
 						}
 					}
 
+					fmt.Println("Waiting for the blocks to be transferred...")
+					s.Start()
 					// Track status of pin requests
 					for range time.Tick(5 * time.Second) {
-						s.Start()
 						current, err := pinClient.GetStatusByID(c.Context, pinRequest.GetRequestId())
 						if err != nil {
 							fmt.Println("failed getting pin request status")
@@ -367,7 +369,7 @@ func addPin(ctx context.Context, client pinclient.Client, cid cid.Cid, name stri
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("Created pin request: %s for root CID %s | status: %s | origins: %v | %s\n", pinRequest.GetRequestId(), cid, pinRequest.GetStatus(), origins, time.Now().Format(time.RFC822))
+	fmt.Printf("Created pin request: %s for root CID %s | status: %s | name: %s | origins: %v \n", pinRequest.GetRequestId(), cid, pinRequest.GetStatus(), name, origins)
 
 	return pinRequest, nil
 }
