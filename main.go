@@ -46,7 +46,7 @@ var (
 	}
 
 	tokenFlag = &cli.StringFlag{
-		Name: "token", Usage: "Bearer token for the pinning service sent in the HTTP Authorization header", Required: true, EnvVars: []string{"PIN_SVC_TOKEN"},
+		Name: "token", Usage: "Bearer token for the pinning service sent in the HTTP Authorization header. Can be set with an environment variable:", Required: true, EnvVars: []string{"PIN_TOKEN"},
 	}
 
 	passOrigins = &cli.BoolFlag{
@@ -108,9 +108,7 @@ func main() {
 			{
 				Name:    "remove",
 				Aliases: []string{"rm"},
-				Usage: `remove a pin request
-				auspinner remove --service [SERVICE] --token [TOKEN] [PIN_REQUEST_ID]
-				`,
+				Usage:   `remove a pin request`, // auspinner remove --service [SERVICE] --token [TOKEN] [PIN_REQUEST_ID]
 				Flags: []cli.Flag{
 					serviceFlag,
 					tokenFlag,
@@ -298,7 +296,6 @@ func main() {
 
 						if pinRequest.GetStatus() != current.GetStatus() {
 							s.Stop()
-
 							fmt.Printf("Pin requestId: %s status change: (%s) -> (%s) | (%s)\n", current.GetRequestId(), pinRequest.GetStatus(), current.GetStatus(), time.Now().Format(time.RFC822))
 							pinRequest = current
 						}
