@@ -196,7 +196,7 @@ func main() {
 					var bwc *metrics.BandwidthCounter
 
 					if c.Bool(verboseFlag.Name) {
-						bwc := metrics.NewBandwidthCounter()
+						bwc = metrics.NewBandwidthCounter()
 						config = append(config, libp2p.BandwidthReporter(bwc))
 					}
 
@@ -313,7 +313,7 @@ func main() {
 						if c.Bool(verboseFlag.Name) {
 							// output bandwidth information
 							st := bwc.GetBandwidthForProtocol("/ipfs/bitswap/1.2.0")
-							s.Suffix = fmt.Sprintf("upload rate: %s/s (connections: %d)\n", humanize.Bytes(uint64(st.RateOut)), len(host.Network().Conns()))
+							s.Suffix = fmt.Sprintf("upload rate: %s/s | total uploaded: %s (connections: %d)\n", humanize.Bytes(uint64(st.RateOut)), humanize.Bytes(uint64(st.TotalOut)), len(host.Network().Conns()))
 						}
 
 						if pinRequest.GetStatus() != current.GetStatus() {
