@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/ipfs/go-cid"
 	pinclient "github.com/ipfs/go-pinning-service-http-client"
 	"github.com/ipld/go-car/v2"
@@ -19,6 +20,7 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/event"
 	"github.com/libp2p/go-libp2p-core/host"
+	"github.com/libp2p/go-libp2p-core/metrics"
 	"github.com/libp2p/go-libp2p-core/peer"
 	routinghelpers "github.com/libp2p/go-libp2p-routing-helpers"
 	"github.com/multiformats/go-multiaddr"
@@ -55,6 +57,10 @@ var (
 
 	nameFlag = &cli.StringFlag{
 		Name: "name", Usage: "Optional name for pinned data; can be used for lookups later", Required: false,
+	}
+
+	verboseFlag = &cli.BoolFlag{
+		Name: "verbose", Usage: "Show open connections and Bitswap upload bandwith", Required: false,
 	}
 )
 
@@ -150,6 +156,7 @@ func main() {
 					tokenFlag,
 					nameFlag,
 					passOrigins,
+					verboseFlag,
 				},
 				Action: func(c *cli.Context) error {
 					endpoint, err := getServiceEndpoint(c.String(serviceFlag.Name))
@@ -185,6 +192,13 @@ func main() {
 					pinClient := pinclient.NewClient(endpoint, c.String(tokenFlag.Name)) // instantiate client with token
 
 					config := []libp2p.Option{}
+
+					var bwc *metrics.BandwidthCounter
+
+					if c.Bool(verboseFlag.Name) {
+						bwc = metrics.NewBandwidthCounter()
+						config = append(config, libp2p.BandwidthReporter(bwc))
+					}
 
 					if c.Bool(passOrigins.Name) {
 						// To pass the origins we typically need to port map assuming we're behind NAT
@@ -294,6 +308,12 @@ func main() {
 						if err != nil {
 							fmt.Println("failed getting pin request status")
 							continue
+						}
+
+						if c.Bool(verboseFlag.Name) {
+							// output bandwidth information
+							st := bwc.GetBandwidthForProtocol("/ipfs/bitswap/1.2.0")
+							s.Suffix = fmt.Sprintf("upload rate: %s/s | total uploaded: %s (connections: %d)\n", humanize.Bytes(uint64(st.RateOut)), humanize.Bytes(uint64(st.TotalOut)), len(host.Network().Conns()))
 						}
 
 						if pinRequest.GetStatus() != current.GetStatus() {
