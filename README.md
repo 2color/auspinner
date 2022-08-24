@@ -24,6 +24,7 @@ Auspinner has been tested to work with:
 - [web3.storage](https://web3.storage/)
 - [pinata](https://www.pinata.cloud/)
 - [estuary](https://estuary.tech/)
+- [Filebase](https://docs.filebase.com/storage-networks/ipfs/ipfs-pinning)
 
 Check out [the pinning service compliance reports](https://ipfs-shipyard.github.io/pinning-service-compliance/) to see which services are correctly implementing the IPFS Pinning Service API Spec.
 
